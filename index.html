@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Evolve Content Uploader</title>
+        <link rel="icon" href="/civicplus-mark.png">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+        <link rel="stylesheet" href="/style.css">
+    </head>
+    <body>
+        <header id="topbar">
+            <div id="topbarBrand">
+                <img src="/civicplus-mark.png" alt="" id="brandMark">
+                <span id="brandTitle">Evolve Content Uploader</span>
+            </div>
+            <div id="topbarTag">Internal tool</div>
+        </header>
+
+        <div id="appShell">
+            <aside id="connectionRail">
+                <h2>Connection instructions</h2>
+                <p id="instructions">
+                    <p>Enter the site app name found in the URL while on the HCMS. It will be the the section betweenn slashes after the app.</p>
+                    <p>Then add the token from client section of the HCMS that has the correct premissions for each content type you are wishing to upload.</p>
+                    <p>Click "Test connection" any time to check the site name and token are correct before uploading anything — it only reads, it never changes anything on the site.</p>
+                    <p>Choose a workbook. Sheets are matched to content types by name, so their order does not matter.</p>
+                </p>
+
+                <label for="inputURL">Site app name</label>
+                <input type="text" id="inputURL" placeholder="client-site.civicplus.com">
+
+                <label for="inputToken">Token</label>
+                <input type="password" id="inputToken" value="" autocomplete="off">
+
+                <button type="button" id="testConnectionBtn" class="test-connection-btn">Test connection</button>
+                <div id="connectionCheckResult" class="connection-check" hidden></div>
+
+                <label for="inputFile">Content workbook</label>
+                <input class="uploadButton" type="file" id="inputFile" accept=".xlsx,.xlsm,.xls,.csv">
+                <span id="fileName" class="hint"></span>
+
+                <div id="customTypesSection">
+                    <h2>Content types on this project</h2>
+                    <p class="panel-hint">Register another content type so it gets its own upload button. The schema must already exist on the site &mdash; this only teaches the uploader how to send rows to it.</p>
+
+                    <button type="button" id="addContentTypeBtn" class="add-type-btn">+ Register a content type</button>
+
+                    <div id="manualTypeForm" class="custom-form" hidden>
+                        <label for="manualTypeLabel">Display name</label>
+                        <input type="text" id="manualTypeLabel" placeholder="e.g. Agendas">
+
+                        <label for="manualTypeEndpoint">Schema slug on the site</label>
+                        <input type="text" id="manualTypeEndpoint" placeholder="e.g. gh-agenda" list="schemaOptions">
+                        <span class="hint">Run Test connection first to pick from the schemas that actually exist.</span>
+
+                        <label for="manualTypeSheet">Sheet name to read</label>
+                        <input type="text" id="manualTypeSheet" placeholder="e.g. Agendas and Minutes">
+                        <span class="hint">Every column in that sheet is uploaded as a plain text field.</span>
+
+                        <div class="form-actions">
+                            <button type="button" id="manualTypeSave" class="custom-save-btn">Save</button>
+                            <button type="button" id="manualTypeCancel" class="cancel-btn">Cancel</button>
+                        </div>
+                        <div id="manualTypeError" class="custom-error" hidden></div>
+                    </div>
+
+                    <div id="savedCustomTypes" hidden>
+                        <h3 class="sub-h">Registered</h3>
+                        <div id="savedCustomList"></div>
+                    </div>
+
+                    <div id="customImportsPanel" hidden>
+                        <h3 class="sub-h">Unrecognized sheets in this workbook</h3>
+                        <p class="panel-hint">Register one in a click &mdash; its columns are already known.</p>
+                        <div id="unmatchedSheets"></div>
+                    </div>
+                </div>
+            </aside>
+
+            <main id="mainDashboard">
+                <section id="contentSection">
+                    <div class="section-head">
+                        <h2>Content types</h2>
+                        <p class="section-hint">Sheets are matched by name. Pick a different one if needed.</p>
+                    </div>
+                    <div id="buttonsDiv"></div>
+                </section>
+
+                <section id="assetsSection">
+                    <div class="section-head">
+                        <h2>Documents</h2>
+                        <p class="section-hint">Uploads every file in a folder to the assets library.</p>
+                    </div>
+
+                    <label for="inputFolder">Folder of files</label>
+                    <input type="file" id="inputFolder" webkitdirectory multiple>
+                    <span id="folderFileCount" class="hint"></span>
+
+                    <div class="field-row">
+                        <div class="field">
+                            <label for="inputParentId">Parent folder ID</label>
+                            <input type="text" id="inputParentId" placeholder="00000000-0000-0000-0000-000000000000">
+                        </div>
+                        <div class="field">
+                            <label for="inputPermissionSet">Permission set</label>
+                            <input type="text" id="inputPermissionSet" placeholder="Name, required">
+                        </div>
+                    </div>
+
+                    <label for="inputCategories">Categories</label>
+                    <input type="text" id="inputCategories" placeholder="Comma-separated names, optional">
+
+                    <label id="publishLabel" for="inputPublish"><input type="checkbox" id="inputPublish"> Publish immediately</label>
+
+                    <button id="uploadAssetsBtn" class="assets-btn">Upload documents</button>
+                </section>
+
+                <section id="logSection">
+                    <div id="resultsDiv">
+                        <span id="statusDot"></span>
+                        <p id="results">Ready.</p>
+                    </div>
+                </section>
+            </main>
+        </div>
+
+        <script src="/app.js"></script>
+    </body>
+</html>

@@ -1,0 +1,155 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`resources.mapPayload matches the known output shape, including the lowercase+PascalCase duplication (snapshot) 1`] = `
+{
+  "categories": [
+    {
+      "id": "cat-fire-id",
+      "name": "Fire",
+    },
+  ],
+  "data": {
+    "Address": {
+      "iv": {
+        "address1": "Test address 1",
+        "address2": "test address 2",
+        "city": "fake city",
+        "state": "MO",
+        "zip": "66502",
+      },
+    },
+    "Description": {
+      "en": "description goes here",
+    },
+    "Fax": {
+      "en": "555-666-8888",
+    },
+    "Hours": {
+      "en": "9 pm to 5 pm",
+    },
+    "Name": {
+      "en": "Name",
+    },
+    "PhoneNumber": {
+      "en": "123-456-7890",
+    },
+    "Website": {
+      "en": {
+        "displayName": "Fake website name",
+        "openInNewWindow": true,
+        "url": "test.com",
+      },
+    },
+    "additionalinformation": {
+      "en": "More info",
+    },
+    "additionalnumber": {
+      "en": "555-444-5555",
+    },
+    "department": {
+      "en": "Putnam County Chamber",
+    },
+    "email": {
+      "en": "email@email.com",
+    },
+    "faxnumber": {
+      "en": "333-444-8888",
+    },
+    "hoursofoperation": {
+      "en": "5 am to 6 am",
+    },
+    "location": {
+      "iv": {
+        "address1": "Test address 1",
+        "address2": "test address 2",
+        "city": "fake city",
+        "state": "MO",
+        "zip": "66502",
+      },
+    },
+    "maskedemail": {
+      "en": "Test mask email",
+    },
+    "phonenumber": {
+      "en": "123-456-7890",
+    },
+  },
+  "permissionSet": {
+    "id": "ps-general-id",
+    "name": "General",
+  },
+  "publish": "Yes",
+  "searchFields": {
+    "Address": {
+      "iv": {
+        "address1": "Test address 1",
+        "address2": "test address 2",
+        "city": "fake city",
+        "state": "MO",
+        "zip": "66502",
+      },
+    },
+    "Description": {
+      "en": "description goes here",
+    },
+    "Fax": {
+      "en": "555-666-8888",
+    },
+    "Hours": {
+      "en": "9 pm to 5 pm",
+    },
+    "Name": {
+      "en": "Name",
+    },
+    "PhoneNumber": {
+      "en": "123-456-7890",
+    },
+    "Website": {
+      "en": {
+        "displayName": "Fake website name",
+        "openInNewWindow": true,
+        "url": "test.com",
+      },
+    },
+    "additionalinformation": {
+      "en": "More info",
+    },
+    "additionalnumber": {
+      "en": "555-444-5555",
+    },
+    "department": {
+      "en": "Putnam County Chamber",
+    },
+    "email": {
+      "en": "email@email.com",
+    },
+    "faxnumber": {
+      "en": "333-444-8888",
+    },
+    "hoursofoperation": {
+      "en": "5 am to 6 am",
+    },
+    "location": {
+      "iv": {
+        "address1": "Test address 1",
+        "address2": "test address 2",
+        "city": "fake city",
+        "state": "MO",
+        "zip": "66502",
+      },
+    },
+    "maskedemail": {
+      "en": "Test mask email",
+    },
+    "phonenumber": {
+      "en": "123-456-7890",
+    },
+  },
+  "tags": undefined,
+  "titles": {
+    "department": {
+      "en": "Putnam County Chamber",
+    },
+  },
+}
+`;

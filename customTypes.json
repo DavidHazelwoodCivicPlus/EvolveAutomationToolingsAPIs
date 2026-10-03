@@ -1,0 +1,46 @@
+{
+  "custom_test": {
+    "label": "test",
+    "endpoint": "TERST",
+    "sheetName": "test",
+    "columns": [
+      "Department",
+      "MaskedEmail",
+      "PhoneNumber",
+      "AdditionalNumber",
+      "FaxNumber",
+      "Address1",
+      "Address2",
+      "City",
+      "State",
+      "Zip",
+      "Latitude",
+      "Longitude",
+      "HoursOfOperation",
+      "AdditionalInformation",
+      "Name",
+      "Email",
+      "Fax",
+      "Hours",
+      "WebsiteUrl",
+      "WebsiteDisplayName",
+      "Description",
+      "Publish",
+      "UserName",
+      "PermissionSet",
+      "Categories",
+      "Ack"
+    ]
+  },
+  "custom_agendasandminutes": {
+    "label": "Agendas and Minutes",
+    "endpoint": "Test",
+    "sheetName": "Agendas and Minutes",
+    "columns": [
+      "Publish",
+      "Name",
+      "PermissionSet",
+      "Categories"
+    ]
+  }
+}

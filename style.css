@@ -1,0 +1,753 @@
+/* ---------------------------------------------------------------------
+   Design tokens
+   Ink and Signal are sampled directly from the CivicPlus mark, not
+   approximated. Paper is a cool neutral (not cream) so Signal red is the
+   only warm note on the page. One radius, one accent, used sparingly.
+--------------------------------------------------------------------- */
+:root {
+    --ink: #383938;
+    --ink-soft: #6b6d6b;
+    --signal: #cc0020;
+    --signal-dark: #a50019;
+    --signal-tint: #fbe9ec;
+    --paper: #f5f6f5;
+    --surface: #ffffff;
+    --line: #e1e2df;
+    --confirm: #1b7a43;
+
+    --radius: 6px;
+    --font-ui: 'Public Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* , *::before, *::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+}
+
+button, input {
+    font-family: inherit;
+    color: inherit;
+}
+
+h2 {
+    margin: 0;
+}
+
+/* --------------------------- Top bar --------------------------- */
+
+#topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 28px;
+    background: var(--ink);
+    color: #fff;
+    border-bottom: 3px solid var(--signal);
+}
+
+#topbarBrand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+#brandMark {
+    height: 28px;
+    width: auto;
+    display: block;
+}
+
+#brandTitle {
+    font-weight: 600;
+    font-size: 0.92rem;
+    letter-spacing: 0.01em;
+}
+
+#topbarTag {
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.68);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    padding: 4px 10px;
+    border-radius: 999px;
+}
+
+/* --------------------------- App shell --------------------------- */
+
+#appShell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 32px 28px 64px;
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+}
+
+/* --------------------------- Connection rail --------------------------- */
+
+#connectionRail {
+    flex: 0 0 272px;
+    position: sticky;
+    top: 80px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+#connectionRail h2 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+#instructions {
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    margin: 0 0 12px;
+}
+
+#connectionRail label,
+#assetsSection > label,
+.field label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 12px;
+    margin-bottom: 6px;
+}
+
+#connectionRail input[type="text"],
+#connectionRail input[type="file"],
+#assetsSection input[type="text"] {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--paper);
+    font-size: 0.88rem;
+}
+
+#connectionRail input[type="text"]:focus,
+#assetsSection input[type="text"]:focus {
+    outline: none;
+    border-color: var(--signal);
+    box-shadow: 0 0 0 3px rgba(204, 0, 32, 0.12);
+}
+
+#connectionRail input[type="file"] {
+    font-size: 0.82rem;
+}
+
+.hint {
+    display: block;
+    font-size: 0.76rem;
+    color: var(--ink-soft);
+    margin-top: 4px;
+}
+
+/* --------------------------- Test connection --------------------------- */
+
+.test-connection-btn {
+    all: unset;
+    box-sizing: border-box;
+    display: inline-block;
+    margin-top: 12px;
+    padding: 8px 14px;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.82rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.test-connection-btn:hover:not(:disabled) {
+    border-color: var(--signal);
+    background: var(--paper);
+}
+
+.test-connection-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.test-connection-btn:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+}
+
+.connection-check {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.checking {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+}
+
+.check-subheading {
+    margin-top: 6px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+}
+
+.check-item {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 0.8rem;
+    line-height: 1.4;
+}
+
+.check-icon {
+    flex: 0 0 auto;
+    font-weight: 700;
+}
+
+.check-ok .check-icon {
+    color: var(--confirm);
+}
+
+.check-fail .check-icon {
+    color: var(--signal);
+}
+
+.check-label {
+    color: var(--ink);
+}
+
+.check-detail {
+    color: var(--ink-soft);
+    font-size: 0.76rem;
+}
+
+.schema-list {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.schema-list summary {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+    cursor: pointer;
+    padding: 2px 0;
+}
+
+.schema-list summary:hover {
+    color: var(--signal);
+}
+
+.schema-row {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 3px 0 3px 10px;
+}
+
+.schema-row code {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    color: var(--ink);
+    word-break: break-all;
+}
+
+.schema-used code {
+    color: var(--ink-soft);
+}
+
+.schema-tag {
+    flex: 0 0 auto;
+    font-size: 0.64rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--confirm);
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 0 6px;
+}
+
+/* --------------------------- Sheet pickers & custom imports --------------------------- */
+
+.type-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid var(--line);
+}
+
+.type-row .upload-btn {
+    border-bottom: none;
+    flex: 1;
+    min-width: 0;
+}
+
+.sheet-picker {
+    flex: 0 0 auto;
+    padding-right: 14px;
+    font-size: 0.74rem;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.sheet-picker select {
+    font-family: inherit;
+    font-size: 0.76rem;
+    padding: 4px 6px;
+    max-width: 170px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--ink);
+}
+
+#customImportsPanel,
+#savedCustomTypes {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+
+#customTypesSection {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+}
+
+#customTypesSection h2 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.sub-h {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+    margin: 0 0 8px;
+}
+
+.add-type-btn {
+    all: unset;
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    padding: 9px 12px;
+    text-align: center;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px dashed var(--line);
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.add-type-btn:hover {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
+.add-type-btn:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+}
+
+#manualTypeForm {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+}
+
+#manualTypeForm label {
+    margin-top: 8px;
+    margin-bottom: 4px;
+}
+
+.form-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.cancel-btn {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 7px 14px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--ink-soft);
+    cursor: pointer;
+}
+
+.cancel-btn:hover {
+    border-color: var(--ink-soft);
+    color: var(--ink);
+}
+
+#customImportsPanel h2,
+#savedCustomTypes h2 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+#customTypesSection #customImportsPanel,
+#customTypesSection #savedCustomTypes {
+    margin-top: 16px;
+    padding-top: 14px;
+}
+
+.panel-hint {
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--ink-soft);
+    margin: 0 0 12px;
+}
+
+.unmatched-sheet {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.unmatched-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+
+.unmatched-cols {
+    font-size: 0.74rem;
+    color: var(--ink-soft);
+    margin: 3px 0 8px;
+    word-break: break-word;
+}
+
+.custom-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.custom-form input[type="text"] {
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--paper);
+    font-size: 0.82rem;
+}
+
+.custom-save-btn {
+    align-self: flex-start;
+    background: var(--signal);
+    color: #fff;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.custom-save-btn:hover:not(:disabled) {
+    background: var(--signal-dark);
+}
+
+.custom-save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.custom-error {
+    font-size: 0.76rem;
+    color: var(--signal);
+}
+
+.saved-custom-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.8rem;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.remove-custom-btn {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 3px 9px;
+    font-size: 0.72rem;
+    cursor: pointer;
+    color: var(--ink-soft);
+}
+
+.remove-custom-btn:hover:not(:disabled) {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
+/* --------------------------- Main column --------------------------- */
+
+#mainDashboard {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+#contentSection,
+#assetsSection {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 24px 22px;
+}
+
+.section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin-bottom: 14px;
+}
+
+.section-head h2 {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.section-hint {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+}
+
+/* Content-type rows: a settings-style list, not a grid of identical pills.
+   Name/description come from data-name / data-desc via generated content, so
+   the button itself stays a single leaf node with no click-target quirks. */
+
+#buttonsDiv {
+    border-top: 1px solid var(--line);
+}
+
+.upload-btn {
+    all: unset;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--line);
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.upload-btn:hover:not(:disabled) {
+    background: var(--paper);
+    border-left-color: var(--signal);
+}
+
+.upload-btn:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: -2px;
+}
+
+.upload-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.upload-btn::before {
+    content: attr(data-name);
+    display: block;
+    font-weight: 600;
+    font-size: 0.88rem;
+    color: var(--ink);
+}
+
+.upload-btn::after {
+    content: attr(data-desc);
+    display: block;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+}
+
+/* --------------------------- Documents (assets) --------------------------- */
+
+.field-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.field-row .field {
+    flex: 1;
+    min-width: 190px;
+}
+
+#assetsSection input[type="file"] {
+    padding: 8px 0;
+    font-size: 0.85rem;
+}
+
+#publishLabel {
+    flex-direction: row !important;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500 !important;
+    color: var(--ink) !important;
+    margin-top: 16px !important;
+}
+
+#publishLabel input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--signal);
+}
+
+.assets-btn {
+    margin-top: 16px;
+    align-self: flex-start;
+    background: var(--signal);
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background-color 0.15s ease, transform 0.05s ease;
+}
+
+.assets-btn:hover:not(:disabled) {
+    background: var(--signal-dark);
+}
+
+.assets-btn:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.assets-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.assets-btn:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+}
+
+.uploadButton{
+    padding-left: 3px;
+}
+
+/* --------------------------- Activity / status line --------------------------- */
+
+#logSection {
+    background: var(--ink);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+#resultsDiv {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 20px;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: #e8e9e7;
+}
+
+#statusDot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #8b8d8b;
+}
+
+#results {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* --------------------------- Responsive --------------------------- */
+
+@media (max-width: 860px) {
+    #appShell {
+        flex-direction: column;
+        padding: 20px 16px 48px;
+    }
+
+    #connectionRail {
+        position: static;
+        width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    #topbar {
+        padding: 0 16px;
+    }
+
+    #topbarTag {
+        display: none;
+    }
+
+    #contentSection,
+    #assetsSection {
+        padding: 16px;
+    }
+}
