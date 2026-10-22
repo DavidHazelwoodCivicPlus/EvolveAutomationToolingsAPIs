@@ -619,3 +619,371 @@ describe('the token field', () => {
         expect(document.getElementById('inputToken').getAttribute('type')).toBe('password');
     });
 });
+
+describe('folder (assets) upload in batches', () => {
+    // A folder's FileList, with webkitRelativePath set the way the
+    // directory picker sets it ("Folder/sub/name").
+    function attachFolder(names) {
+        const files = names.map(rel => {
+            const file = new File(['x'], rel.split('/').pop(), { type: 'image/jpeg' });
+            Object.defineProperty(file, 'webkitRelativePath', { value: `Photos/${rel}` });
+            return file;
+        });
+        const input = document.getElementById('inputFolder');
+        Object.defineProperty(input, 'files', { value: files, configurable: true });
+        input.dispatchEvent(new Event('change'));
+        return files;
+    }
+
+    function fillConnection() {
+        document.getElementById('inputURL').value = 'site';
+        document.getElementById('inputToken').value = 'token';
+    }
+
+    const isUpload = (url) => String(url).startsWith('/upload/assets?');
+    const isStatus = (url) => String(url).startsWith('/upload/assets/status/');
+
+    // Answers every batch as fully uploaded unless `onUpload` says
+    // otherwise; status polls say "unknown" unless `onStatus` says
+    // otherwise; `extra` handles any other URL the test cares about.
+    function mockFetch({ onUpload, onStatus, extra } = {}) {
+        global.fetch = jest.fn((url, opts) => {
+            if (String(url).includes('/content-types')) return jsonOk({ types: BUILT_IN_TYPES });
+            if (isUpload(url)) {
+                const custom = onUpload && onUpload(opts, url);
+                if (custom) return custom;
+                return jsonOk({ uploaded: opts.body.getAll('files').length, failedFiles: [], errors: [], warnings: [] });
+            }
+            if (isStatus(url)) {
+                return (onStatus && onStatus(url)) || jsonOk({ state: 'unknown' });
+            }
+            const handled = extra && extra(url);
+            return handled || jsonOk({});
+        });
+    }
+
+    // Promise that never settles until the abort signal fires — a request
+    // the browser never delivers.
+    const neverDelivered = (opts) => new Promise((resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    });
+
+    async function loadAssetSheet() {
+        attachFile(document.getElementById('inputFile'));
+        document.getElementById('inputFile').dispatchEvent(new Event('change'));
+        await flushPromises();
+    }
+
+    // The upload loop polls on timers, so runs are driven with fake time.
+    async function startUpload(buttonId = 'uploadAssetsBtn') {
+        jest.useFakeTimers();
+        document.getElementById(buttonId).click();
+    }
+    const advance = (ms) => jest.advanceTimersByTimeAsync(ms);
+
+    const uploadCalls = () => global.fetch.mock.calls.filter(([url]) => isUpload(url));
+    const results = () => document.getElementById('results').innerText;
+
+    test('splits a large folder into sequential batches of the chosen size', async () => {
+        mockFetch();
+        await loadPage();
+        fillConnection();
+        attachFolder(Array.from({ length: 60 }, (_, i) => `f${i}.jpg`));
+        document.getElementById('inputBatchSize').value = '25';
+
+        await startUpload();
+        await advance(3000);
+
+        const sizes = uploadCalls().map(([, opts]) => opts.body.getAll('files').length);
+        expect(sizes).toEqual([25, 25, 10]);
+        expect(results()).toMatch(/Uploaded 60 of 60/);
+    });
+
+    test('every batch gets its own batchId', async () => {
+        mockFetch();
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg', 'b.jpg']);
+        document.getElementById('inputBatchSize').value = '1';
+
+        await startUpload();
+        await advance(2000);
+
+        const ids = uploadCalls().map(([url]) => new URL(url, 'http://x').searchParams.get('batchId'));
+        expect(ids).toHaveLength(2);
+        expect(ids[0]).toBeTruthy();
+        expect(ids[0]).not.toBe(ids[1]);
+    });
+
+    test('batch size is capped at the server limit of 50', async () => {
+        mockFetch();
+        await loadPage();
+        fillConnection();
+        attachFolder(Array.from({ length: 120 }, (_, i) => `f${i}.jpg`));
+        document.getElementById('inputBatchSize').value = '500';
+
+        await startUpload();
+        await advance(3000);
+
+        expect(uploadCalls().map(([, opts]) => opts.body.getAll('files').length)).toEqual([50, 50, 20]);
+    });
+
+    test('Assets-sheet rows are matched to files (by sub-path, then name) and sent as fileSettings', async () => {
+        mockFetch({
+            extra: (url) => url === '/inspect-assets-sheet' && jsonOk({ found: true, sheetName: 'Assets', rows: [
+                { fileName: 'sub/a.jpg', altText: 'Sub A' },
+                { fileName: 'B.JPG', altText: 'Bee', publish: true }
+            ] })
+        });
+        await loadPage();
+        fillConnection();
+        await loadAssetSheet();
+
+        attachFolder(['sub/a.jpg', 'a.jpg', 'b.jpg', 'c.jpg']);
+        expect(document.getElementById('folderFileCount').innerText).toMatch(/2 have a row/);
+
+        await startUpload();
+        await advance(1000);
+
+        const settings = JSON.parse(uploadCalls()[0][1].body.get('fileSettings'));
+        expect(settings).toEqual([
+            { fileName: 'sub/a.jpg', altText: 'Sub A' },
+            {},
+            { fileName: 'B.JPG', altText: 'Bee', publish: true },
+            {}
+        ]);
+    });
+
+    test('"only listed files" skips files with no Assets-sheet row', async () => {
+        mockFetch({
+            extra: (url) => url === '/inspect-assets-sheet' && jsonOk({ found: true, rows: [{ fileName: 'b.jpg' }] })
+        });
+        await loadPage();
+        fillConnection();
+        await loadAssetSheet();
+        attachFolder(['a.jpg', 'b.jpg']);
+        document.getElementById('inputOnlyListed').checked = true;
+
+        await startUpload();
+        await advance(1000);
+
+        expect(uploadCalls()[0][1].body.getAll('files').map(f => f.name)).toEqual(['b.jpg']);
+    });
+
+    test('failed files can be retried on their own', async () => {
+        let attempt = 0;
+        mockFetch({
+            onUpload: () => {
+                attempt++;
+                if (attempt !== 1) return null;
+                return Promise.resolve({ ok: false, status: 207, json: () => Promise.resolve({ uploaded: 1, failedFiles: ['b.jpg'], errors: ['b.jpg: HTTP 500'], warnings: [] }) });
+            }
+        });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg', 'b.jpg']);
+
+        await startUpload();
+        await advance(1000);
+
+        const retryBtn = document.getElementById('retryAssetsBtn');
+        expect(retryBtn.hidden).toBe(false);
+        expect(document.getElementById('assetIssues').textContent).toMatch(/b\.jpg: HTTP 500/);
+
+        retryBtn.click();
+        await advance(1000);
+
+        expect(uploadCalls()[1][1].body.getAll('files').map(f => f.name)).toEqual(['b.jpg']);
+        expect(retryBtn.hidden).toBe(true);
+    });
+
+    test('files the site already had are reported as duplicates, not uploads', async () => {
+        mockFetch({ onUpload: () => jsonOk({ uploaded: 1, duplicates: 2, failedFiles: [], errors: [], warnings: [] }) });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg', 'b.jpg', 'c.jpg']);
+        document.getElementById('inputAllowDuplicates').checked = true;
+
+        await startUpload();
+        await advance(1000);
+
+        expect(uploadCalls()[0][1].body.get('allowDuplicates')).toBe('true');
+        expect(uploadCalls()[0][1].body.get('batchLabel')).toBe('Batch 1 of 1');
+        expect(results()).toMatch(/Uploaded 1 of 3 file\(s\)\. 2 already existed/);
+    });
+
+    test('a slow batch shows a ticking timer and the server\'s own progress', async () => {
+        let release;
+        mockFetch({
+            onUpload: () => new Promise(resolve => {
+                release = () => resolve({ ok: true, status: 200, json: () => Promise.resolve({ uploaded: 1, failedFiles: [] }) });
+            }),
+            onStatus: () => jsonOk({ state: 'working', done: 3, total: 25 })
+        });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg']);
+
+        await startUpload();
+        await advance(5000);
+        expect(document.getElementById('assetProgressText').innerText)
+            .toMatch(/working on this batch for 5s \(server has handled 3 of 25\)/);
+
+        release();
+        await advance(1000);
+        expect(results()).toMatch(/Uploaded 1 of 1/);
+    });
+
+    test('a batch the server never receives is cancelled and sent again', async () => {
+        let sends = 0;
+        mockFetch({ onUpload: (opts) => (++sends === 1 ? neverDelivered(opts) : null) });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg', 'b.jpg']);
+
+        await startUpload();
+        await advance(59 * 1000);
+        expect(uploadCalls()).toHaveLength(1);   // still waiting
+
+        await advance(5 * 1000);
+        expect(uploadCalls()).toHaveLength(2);   // gave up on the first, resent
+        expect(uploadCalls()[0][1].signal.aborted).toBe(true);
+
+        await advance(1000);
+        expect(results()).toMatch(/Uploaded 2 of 2/);
+        expect(document.getElementById('assetIssues').textContent).toMatch(/Batch 1 of 1: the server never received it \(send 1 of 3\) — sent again/);
+    });
+
+    test('a batch that can never be delivered fails after 3 sends and the run moves on', async () => {
+        let sends = 0;
+        mockFetch({ onUpload: (opts) => (++sends <= 3 ? neverDelivered(opts) : null) });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg', 'b.jpg']);
+        document.getElementById('inputBatchSize').value = '1';
+
+        await startUpload();
+        await advance(4 * 60 * 1000);
+
+        expect(uploadCalls()).toHaveLength(4); // 3 tries at batch 1, then batch 2
+        expect(results()).toMatch(/Uploaded 1 of 2 file\(s\)\. 1 failed/);
+        expect(document.getElementById('retryAssetsBtn').hidden).toBe(false);
+    }, 30000); // four simulated minutes of polling
+
+    test('a batch the server finished, whose response got lost, is recovered from the status', async () => {
+        mockFetch({
+            onUpload: (opts) => neverDelivered(opts),
+            onStatus: () => jsonOk({ state: 'finished', statusCode: 200, result: { uploaded: 2, failedFiles: [] } })
+        });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg', 'b.jpg']);
+
+        await startUpload();
+        await advance(5000);
+
+        expect(uploadCalls()).toHaveLength(1); // not resent
+        expect(results()).toMatch(/Uploaded 2 of 2/);
+    });
+
+    test('Stop cancels a batch the server never received instead of waiting on it', async () => {
+        mockFetch({ onUpload: (opts) => neverDelivered(opts) });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg', 'b.jpg']);
+        document.getElementById('inputBatchSize').value = '1';
+
+        await startUpload();
+        await advance(2000);
+        document.getElementById('stopAssetsBtn').click();
+        await advance(1000);
+
+        expect(uploadCalls()).toHaveLength(1);
+        expect(results()).toMatch(/Uploaded 0 of 2 file\(s\)\. Stopped — 2 not sent/);
+    });
+
+    test('losing the uploader server entirely fails the batch with a clear message', async () => {
+        mockFetch({
+            onUpload: () => Promise.reject(new TypeError('Failed to fetch')),
+            onStatus: () => Promise.reject(new TypeError('Failed to fetch'))
+        });
+        await loadPage();
+        fillConnection();
+        attachFolder(['a.jpg']);
+
+        await startUpload();
+        await advance(5000);
+
+        expect(document.getElementById('assetIssues').textContent).toMatch(/lost contact with the uploader server/);
+    });
+});
+
+describe('old-site link report', () => {
+    function fill() {
+        document.getElementById('inputURL').value = 'cp-examplesites';
+        document.getElementById('inputToken').value = 'token';
+    }
+
+    test('asks for the old domain before scanning', async () => {
+        await loadPage();
+        fill();
+        const before = global.fetch.mock.calls.length;
+        document.getElementById('linkReportBtn').click();
+        await flushPromises();
+        expect(document.getElementById('results').innerText).toMatch(/old website's domain/);
+        expect(global.fetch.mock.calls.length).toBe(before);
+    });
+
+    test('sends the domain, saves the .xlsx and shows the counts', async () => {
+        const summary = { fileLinks: 12, itemsWithFileLinks: 5, itemsScanned: 400, fileLinksWithNoMatch: 4, fileLinksWithSimilarMatch: 3, fileLinksWithExactMatch: 5, pageLinks: 9, schemaErrors: [] };
+        global.fetch = jest.fn((url) => {
+            if (String(url).includes('/content-types')) return jsonOk({ types: BUILT_IN_TYPES });
+            if (url === '/old-link-report') {
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    headers: new Headers({
+                        'X-Report-Summary': encodeURIComponent(JSON.stringify(summary)),
+                        'Content-Disposition': 'attachment; filename="OldLinkReport-cp-examplesites.xlsx"'
+                    }),
+                    blob: () => Promise.resolve(new Blob(['x']))
+                });
+            }
+            return jsonOk({});
+        });
+        URL.createObjectURL = jest.fn(() => 'blob:x');
+        URL.revokeObjectURL = jest.fn();
+        const clicks = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+        await loadPage();
+        fill();
+        document.getElementById('inputOldDomains').value = 'co.monmouth.nj.us';
+        document.getElementById('linkReportBtn').click();
+        await flushPromises();
+
+        const [, opts] = global.fetch.mock.calls.find(([url]) => url === '/old-link-report');
+        expect(JSON.parse(opts.body)).toEqual({ url: 'cp-examplesites', apiKey: 'token', oldDomains: 'co.monmouth.nj.us' });
+        expect(clicks).toHaveBeenCalled();
+        expect(document.getElementById('results').innerText).toMatch(/OldLinkReport-cp-examplesites\.xlsx/);
+        const text = document.getElementById('linkReportSummary').innerText;
+        expect(text).toMatch(/12 link\(s\) to old-site files in 5 content item\(s\)/);
+        expect(text).toMatch(/4 have no matching file in Evolve/);
+    });
+});
+
+describe('old-site link report against an outdated server', () => {
+    test('a 404 says to restart the server', async () => {
+        global.fetch = jest.fn((url) => {
+            if (String(url).includes('/content-types')) return jsonOk({ types: BUILT_IN_TYPES });
+            if (url === '/old-link-report') return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found', json: () => Promise.reject(new Error('html')) });
+            return jsonOk({});
+        });
+        await loadPage();
+        document.getElementById('inputURL').value = 's';
+        document.getElementById('inputToken').value = 't';
+        document.getElementById('inputOldDomains').value = 'co.monmouth.nj.us';
+        document.getElementById('linkReportBtn').click();
+        await flushPromises();
+        expect(document.getElementById('results').innerText).toMatch(/Restart it/);
+    });
+});

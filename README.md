@@ -25,8 +25,45 @@ Each content type looks for a sheet by **name**, not by position:
 | News | `News` | Title, text, date, asset reference |
 | Calendar | `Calendar` | Event name, date, time, details, attachments |
 | Facilities | `Facility` | Facility name |
+| Documents (per-file settings) | `Assets` | Optional; see *Documents* below |
 
 Matching ignores case and punctuation, so `Facility`, `facility`, and `FACILITY ` all work. If a sheet has been renamed to something unrecognizable, the tool falls back to the old fixed position — and either way you can override the choice per content type with the **Sheet** dropdown next to each button once a workbook is loaded.
+
+## Documents (bulk asset upload)
+
+The **Documents** panel uploads every file in a chosen folder (subfolders included) to the site's assets library.
+
+- **Batches.** Large folders are sent in batches. Each batch is one request, and batches go one at a time. The default is 25 files per batch, the maximum is 50, and a batch also closes at about 150 MB. A progress bar shows how far the run has got. **Stop after this batch** ends a run cleanly. When a run finishes, **Retry N failed** re-sends only the files that failed.
+- **Retries.** Rate limiting (429) and gateway errors (502/503/504) are retried automatically, up to 3 attempts with backoff. Other errors fail that file straight away.
+- **Defaults.** Parent folder ID, permission set, categories, alt text, tags and *Publish immediately* apply to every file.
+- **Assets sheet (per-file settings).** If the content workbook has a sheet named `Assets`, each row overrides the defaults for one file. A blank cell keeps the default. Tick *Only upload files listed in the Assets sheet* to skip the folder's other files.
+
+| Column | Notes |
+|---|---|
+| `FileName` | Matched to the folder's files without regard to case. Use a path inside the folder (`reports/budget.pdf`) when two files share a name. |
+| `ParentFolderId` | Asset folder ID on the site |
+| `PermissionSet` | Name or ID |
+| `Categories` | Comma-separated names or IDs |
+| `AltText` | Alt text for the asset (up to 5000 characters) |
+| `Tags` | Comma-separated |
+| `Publish` | Yes / No |
+
+**Download Assets sheet for this folder** builds that sheet for you: one row per file, pre-filled with the current form values. Edit it, copy the sheet into your workbook, and re-select the workbook.
+
+Alt text and tags are sent with the upload. If the site's response doesn't show them, they are set with a follow-up update to the asset. If that follow-up fails, the file still counts as uploaded and the problem is listed as a warning. Unknown category or permission-set names are also listed as warnings rather than failing the file.
+
+## Old-site link report
+
+A read-only check for links to the old website's files that are still in the site's content and need repointing. Enter the old site's domain (e.g. `co.monmouth.nj.us`; comma-separate several) and click **Build report**. The tool scans every content item of every content type, drafts included, and downloads `OldLinkReport-<site>.xlsx`. **It never changes anything on the site.**
+
+- **Summary**: the headline counts, plus any content type the token couldn't read.
+- **File links**: one row per link to an old-site file. A link counts as a file if it has a file extension like `.pdf`/`.docx`/`.jpg`, or a document path like `/DocumentCenter/View/123` or `/documents/`. Each row has the content type, title, status, field, link text, old URL and file name, plus an **Edit in Evolve** link to the item. The **Result** column says what to do:
+  - *NO matching file in Evolve assets*: nothing with that file name has been uploaded. Find and upload the file, or remove the link. These rows are listed first.
+  - *SIMILAR name*: an asset whose name matches when spacing, punctuation and case are ignored (e.g. `Form_F.pdf` vs `Form F.pdf`). Check it's the same file, then repoint.
+  - *Same name*: an asset with exactly that file name exists. Repoint the link to it. The asset ID (and URL, if the API gives one) is in the row.
+- **Other old-site links**: links to old-site *pages* rather than files, listed separately for review.
+
+Links that don't name the old domain, i.e. relative links, can't be attributed to the old site and aren't included.
 
 ## Custom content types
 
@@ -43,7 +80,7 @@ Custom definitions are saved to `customTypes.json` next to `index.js`, so they s
 
 | File | Purpose |
 |---|---|
-| `index.js` | Express server: serves the GUI, exposes `POST /upload/:type` plus the connection-check, workbook-inspection, and custom-type routes; reads the relevant sheet, maps rows to Evolve API payloads, and batches the upload |
+| `index.js` | Express server: serves the GUI, exposes `POST /upload/:type`, the batched `POST /upload/assets`, plus the connection-check, workbook-inspection, and custom-type routes; reads the relevant sheet, maps rows to Evolve API payloads, and batches the upload |
 | `app.js` | Front-end dashboard logic (buttons, sheet pickers, custom imports, connection check) |
 | `index.html` | Dashboard markup |
 | `style.css` | Dashboard styling |
@@ -74,7 +111,7 @@ Then open `http://localhost:4000` in a browser.
 npm test
 ```
 
-Runs the full suite (293 tests). Nothing touches a real site — every test runs against mocked responses and synthetic workbooks. Run this before publishing new builds; see `TESTING.md` for what's covered and how it's structured.
+Runs the full suite. Nothing touches a real site — every test runs against mocked responses and synthetic workbooks. Run this before publishing new builds; see `TESTING.md` for what's covered and how it's structured.
 
 ## Adding a new built-in content type
 

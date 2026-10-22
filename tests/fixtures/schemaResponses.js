@@ -48,6 +48,8 @@ function buildFetchMock(overrides = {}) {
         assetStatus = 200,
         assetResponse = () => ({ id: 'asset-' + Math.random().toString(36).slice(2, 8) }),
         assetErrorBody = 'asset upload failed',
+        // PUT /api/apps/<site>/assets/<id> — the alt text / tags follow-up.
+        annotateStatus = 200,
         // { [schemaSlug]: [contentItem, ...] } — answers GET
         // /api/content/:site/:schema?$top=200, used by
         // fetchContentNameLookup (department/staff reference lookups).
@@ -79,6 +81,14 @@ function buildFetchMock(overrides = {}) {
             return assetStatus >= 200 && assetStatus < 300
                 ? jsonResponse(assetResponse(url))
                 : textResponse(assetErrorBody, assetStatus);
+        }
+
+        // PUT /api/apps/<site>/assets/<id>  (alt text / tags follow-up)
+        const annotateMatch = path.match(/\/api\/apps\/[^/]+\/assets\/([^/]+)$/);
+        if (method === 'PUT' && annotateMatch) {
+            return annotateStatus >= 200 && annotateStatus < 300
+                ? jsonResponse({ id: annotateMatch[1], ...JSON.parse(options.body || '{}') })
+                : textResponse('annotate failed', annotateStatus);
         }
 
         // GET /api/apps/<site>/<endpoint>  (reference data — permissionSet/categories)

@@ -200,13 +200,14 @@ describe('POST /upload/assets', () => {
         expect(res.body.errors).toHaveLength(1);
     });
 
-    test('exceeding multer\'s file-count limit (200) surfaces as a 400, not a crash', async () => {
+    test('exceeding the per-request file limit (50) surfaces as a 400 that points at batching, not a crash', async () => {
         let req = request(app).post('/upload/assets').field('url', 'site').field('apiKey', 'token');
-        for (let i = 0; i < 201; i++) {
+        for (let i = 0; i < 51; i++) {
             req = req.attach('files', Buffer.from('x'), `f${i}.txt`);
         }
         const res = await req;
         expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/batches/);
     }, 15000);
 
     test('the upload still proceeds when reference-data lookups fail (categories/permissionSet just stay unresolved)', async () => {

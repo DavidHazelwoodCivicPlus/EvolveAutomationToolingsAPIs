@@ -5,7 +5,9 @@ const fs = require('node:fs');
 const multer = require('multer');
 
 const app = express();
-app.use(express.json());
+// 10 MB so the Assets-sheet template request can carry a folder of thousands
+// of file names.
+app.use(express.json({ limit: '10mb' }));
 
 // Excel files are received in memory (never written to disk) and parsed
 // straight from the buffer. 25 MB cap + a light filter for spreadsheet types.
@@ -18,16 +20,6 @@ const upload = multer({
     }
 });
 const uploadSingle = upload.single('file');
-
-// Documents/images for the assets endpoint: any file type, many at once (a
-// whole folder), no extension filter. Memory storage like everything else
-// here — fine for a folder of normal-sized documents, but note every file in
-// the request is buffered in RAM at once, so an extremely large folder could
-// need a streaming approach instead.
-const uploadAssetFiles = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 50 * 1024 * 1024, files: 200 }
-}).array('files', 200);
 
 app.get('/style.css', (req, res) => res.sendFile(path.join(__dirname, 'style.css')));
 app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
@@ -800,33 +792,103 @@ registerCustomTypes(loadCustomTypes());
 // Separate from the Excel-driven content upload below: this posts ONE binary
 // file (image, PDF, doc, whatever) straight to the assets endpoint as
 // multipart/form-data — the same shape the site's own upload UI sends.
-// `categories` is repeated once per id (that's how this API represents an
-// array in form-data); `permissionSet` is a single id. Node's built-in
-// fetch/FormData/Blob handle the multipart body; no extra package needed.
-async function postAssetFile({ siteURL, accessToken, parentId, publish, fileBuffer, fileName, mimeType, categoryIds = [], permissionSetId }) {
-    const form = new FormData();
-    form.append('file', new Blob([fileBuffer], { type: mimeType || 'application/octet-stream' }), fileName);
+// `categories` and `tags` are repeated once per value (that's how this API
+// represents an array in form-data); `permissionSet` is a single id.
+// Node's built-in fetch/FormData/Blob handle the multipart body; no extra
+// package needed.
 
-    for (const id of categoryIds) {
-        if (id) form.append('categories', id);
+// Transient failures worth another try on a long run: rate limiting and
+// gateway hiccups. Anything else (400 validation, 401 token, 500) fails
+// straight away, since retrying would just fail the same way.
+// Every attempt is cut off after timeoutMs, so an API call that never
+// answers fails that file instead of stalling its whole batch (Node's own
+// fetch would otherwise wait 5 minutes per attempt). A Retry-After longer
+// than maxDelayMs is capped — the file fails and can be retried later
+// rather than the run silently sleeping for however long the site asked.
+// Exported and mutable so tests can shrink the delays.
+const ASSET_RETRY = { attempts: 3, baseDelayMs: 1000, timeoutMs: 90 * 1000, maxDelayMs: 30 * 1000 };
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Asset-upload events also go to asset-upload.log next to index.js, so a
+// long run can be diagnosed afterwards even once the server window is
+// closed. Never logs the token.
+const ASSET_LOG_FILE = path.join(__dirname, 'asset-upload.log');
+
+function logAsset(level, message) {
+    const line = `${new Date().toISOString()} [${level}] ${message}`;
+    (level === 'error' ? console.error : level === 'warn' ? console.warn : console.log)(line);
+    if (process.env.JEST_WORKER_ID) return; // keep test runs out of the real log
+    fs.appendFile(ASSET_LOG_FILE, line + '\n', () => { /* logging must never break an upload */ });
+}
+
+// fetch() with retries on RETRYABLE_STATUSES, network errors and timeouts,
+// backing off 1s, 2s, 4s… (or whatever Retry-After asks for, up to
+// maxDelayMs). `buildInit` is called per attempt because a FormData body
+// can't safely be reused once sent.
+async function fetchWithRetry(url, buildInit, label = 'request') {
+    let lastError;
+    for (let attempt = 1; attempt <= ASSET_RETRY.attempts; attempt++) {
+        try {
+            const response = await fetch(url, { ...buildInit(), signal: AbortSignal.timeout(ASSET_RETRY.timeoutMs) });
+            if (!RETRYABLE_STATUSES.has(response.status) || attempt === ASSET_RETRY.attempts) {
+                return response;
+            }
+            const retryAfter = Number(response.headers?.get?.('retry-after'));
+            const wanted = retryAfter > 0 ? retryAfter * 1000 : ASSET_RETRY.baseDelayMs * 2 ** (attempt - 1);
+            const delay = Math.min(wanted, ASSET_RETRY.maxDelayMs);
+            logAsset('warn', `${label}: HTTP ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1} of ${ASSET_RETRY.attempts})`);
+            await sleep(delay);
+        } catch (error) {
+            lastError = error.name === 'TimeoutError'
+                ? new Error(`No response from the site after ${Math.round(ASSET_RETRY.timeoutMs / 1000)}s`)
+                : error;
+            if (attempt === ASSET_RETRY.attempts) break;
+            const delay = ASSET_RETRY.baseDelayMs * 2 ** (attempt - 1);
+            logAsset('warn', `${label}: ${lastError.message}, retrying in ${delay}ms (attempt ${attempt + 1} of ${ASSET_RETRY.attempts})`);
+            await sleep(delay);
+        }
     }
-    if (permissionSetId) {
-        form.append('permissionSet', permissionSetId);
-    }
+    throw lastError;
+}
+
+async function postAssetFile({ siteURL, accessToken, parentId, publish, fileBuffer, fileName, mimeType, categoryIds = [], permissionSetId, altText, tags = [], duplicate = false }) {
+    const buildForm = () => {
+        const form = new FormData();
+        form.append('file', new Blob([fileBuffer], { type: mimeType || 'application/octet-stream' }), fileName);
+
+        for (const id of categoryIds) {
+            if (id) form.append('categories', id);
+        }
+        if (permissionSetId) {
+            form.append('permissionSet', permissionSetId);
+        }
+        if (altText) {
+            form.append('altText', altText);
+        }
+        for (const tag of tags) {
+            if (tag) form.append('tags', tag);
+        }
+        return form;
+    };
 
     const url = new URL(`https://content.civicplus.com/api/apps/${siteURL}/assets`);
     url.searchParams.set('parentId', parentId || '00000000-0000-0000-0000-000000000000');
     url.searchParams.set('publish', String(!!publish));
+    // Without this the site recognises a file it already has (same content
+    // and name) and hands back the existing asset instead of a new one.
+    if (duplicate) url.searchParams.set('duplicate', 'true');
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, () => ({
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${accessToken}`
             // No Content-Type here — fetch generates its own multipart
             // boundary, and setting one manually will break the upload.
         },
-        body: form
-    });
+        body: buildForm()
+    }), `Asset "${fileName}"`);
 
     if (!response.ok) {
         const errBody = await response.text();
@@ -835,95 +897,745 @@ async function postAssetFile({ siteURL, accessToken, parentId, publish, fileBuff
     return response.json();
 }
 
-// Folder-of-files upload: the assets API takes one file per request, so each
-// selected file becomes its own POST, run in small concurrent batches (same
-// pattern as the Excel batching below). Categories / permissionSet can be
-// given as NAMES — resolved against the site's reference data with the same
-// resolveId() used everywhere else in this file — or as raw ids.
+// Sets alt text / tags on an asset that already exists. Used as a follow-up
+// when the create call doesn't echo back the alt text it was given — the
+// asset DTO has an `altText` field, but whether the multipart create accepts
+// it isn't documented, so this makes sure it lands either way. PUT on an
+// asset in Squidex only changes the fields that are sent.
+async function annotateAsset({ siteURL, accessToken, assetId, altText, tags }) {
+    const body = {};
+    if (altText) body.altText = altText;
+    if (tags && tags.length) body.tags = tags;
+
+    const response = await fetchWithRetry(
+        `https://content.civicplus.com/api/apps/${siteURL}/assets/${assetId}`,
+        () => ({
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+        }),
+        `Annotate asset ${assetId}`
+    );
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+    return response.json();
+}
+
+// --- Assets sheet ---
+//
+// Optional per-file settings for the folder upload, read from a sheet named
+// "Assets" in the same workbook as everything else. One row per file;
+// FileName is matched against the files in the chosen folder. Any blank cell
+// falls back to the value in the dashboard's Documents form.
+const ASSET_SHEET_NAME = 'Assets';
+const ASSET_SHEET_COLUMNS = ['FileName', 'ParentFolderId', 'PermissionSet', 'Categories', 'AltText', 'Tags', 'Publish'];
+
+// Loose header lookup ("Alt Text", "alt_text", "ALTTEXT" all work), same
+// normalization used for sheet and schema names.
+const ASSET_COLUMN_KEYS = {
+    filename: 'fileName',
+    file: 'fileName',
+    parentfolderid: 'parentId',
+    parentid: 'parentId',
+    folderid: 'parentId',
+    permissionset: 'permissionSet',
+    categories: 'categories',
+    category: 'categories',
+    alttext: 'altText',
+    alt: 'altText',
+    tags: 'tags',
+    publish: 'publish'
+};
+
+// Yes/No-style cell -> boolean. Blank (or anything unrecognised) -> undefined,
+// meaning "use the form default".
+function parsePublishFlag(value) {
+    if (typeof value === 'boolean') return value;
+    const v = String(value ?? '').trim().toLowerCase();
+    if (['true', 'yes', 'y', '1', 'publish', 'published'].includes(v)) return true;
+    if (['false', 'no', 'n', '0', 'draft'].includes(v)) return false;
+    return undefined;
+}
+
+function findAssetSheetName(sheetNames) {
+    return sheetNames.find(name => normalizeSlug(name) === normalizeSlug(ASSET_SHEET_NAME));
+}
+
+// Rows of the Assets sheet as { fileName, parentId, permissionSet,
+// categories, altText, tags, publish } with blanks dropped. Rows with no
+// FileName are skipped. Returns null when the workbook has no Assets sheet.
+function parseAssetRows(workbook) {
+    const sheetName = findAssetSheetName(workbook.SheetNames);
+    if (!sheetName) return null;
+
+    const raw = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+    const rows = [];
+    for (const record of raw) {
+        const row = {};
+        for (const [header, value] of Object.entries(record)) {
+            const key = ASSET_COLUMN_KEYS[normalizeSlug(header)];
+            if (!key) continue;
+            if (key === 'publish') {
+                const flag = parsePublishFlag(value);
+                if (flag !== undefined) row.publish = flag;
+            } else {
+                const text = String(value ?? '').trim();
+                if (text) row[key] = text;
+            }
+        }
+        if (row.fileName) rows.push(row);
+    }
+    return { sheetName, rows };
+}
+
+// A ready-to-fill Assets sheet listing the given file names, with the
+// form's current values pre-filled in every row.
+function buildAssetTemplateWorkbook(fileNames, defaults = {}) {
+    const rows = fileNames.map(fileName => ({
+        FileName: fileName,
+        ParentFolderId: defaults.parentId || '',
+        PermissionSet: defaults.permissionSet || '',
+        Categories: defaults.categories || '',
+        AltText: defaults.altText || '',
+        Tags: defaults.tags || '',
+        Publish: defaults.publish ? 'Yes' : 'No'
+    }));
+    const sheet = XLSX.utils.json_to_sheet(rows, { header: ASSET_SHEET_COLUMNS });
+    sheet['!cols'] = [{ wch: 40 }, { wch: 38 }, { wch: 18 }, { wch: 24 }, { wch: 40 }, { wch: 20 }, { wch: 8 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, ASSET_SHEET_NAME);
+    return wb;
+}
+
+const splitList = (value) => String(value ?? '').split(',').map(s => s.trim()).filter(Boolean);
+
+// Permission set + category lookups for one site, cached for a few minutes
+// so a large run split into many requests doesn't refetch them per batch.
+// Only fully successful lookups are cached; a failed one is retried next
+// batch rather than leaving names unresolved for the whole run.
+const ASSET_LOOKUP_TTL_MS = 5 * 60 * 1000;
+const assetLookupCache = new Map();
+
+async function getAssetLookups(siteURL, accessToken) {
+    const key = `${siteURL}\u0000${accessToken}`;
+    const cached = assetLookupCache.get(key);
+    if (cached && Date.now() - cached.at < ASSET_LOOKUP_TTL_MS) return cached.lookups;
+
+    let ok = true;
+    const [permissionSet, categories] = await Promise.all([
+        fetchReferenceData(siteURL, 'permissionSet', accessToken).catch(() => { ok = false; return new Map(); }),
+        fetchReferenceData(siteURL, 'categories', accessToken).catch(() => { ok = false; return new Map(); })
+    ]);
+    const lookups = { permissionSet, categories };
+    if (ok) assetLookupCache.set(key, { at: Date.now(), lookups });
+    return lookups;
+}
+
+// The site flags a re-upload of a file it already has with
+// _meta.isDuplicate (a "true"/"false" string) and returns the existing asset
+// instead of creating a new one.
+const isDuplicateResponse = (data) => String(data?._meta?.isDuplicate ?? '').toLowerCase() === 'true';
+
+// Uploads one file with its effective settings (sheet row merged over the
+// form defaults). Resolves to { file, id, duplicate } or { file, error },
+// plus any non-fatal warnings (unknown category names, alt text that didn't
+// stick).
+async function uploadOneAsset({ file, settings, siteURL, accessToken, lookups, allowDuplicates }) {
+    const warnings = [];
+
+    const permissionSetId = settings.permissionSet
+        ? resolveId(settings.permissionSet, lookups.permissionSet, 'permissionSet')
+        : undefined;
+    if (settings.permissionSet && !permissionSetId) {
+        warnings.push(`${file.originalname}: permission set "${settings.permissionSet}" not found on the site`);
+    }
+
+    const categoryIds = [];
+    for (const name of splitList(settings.categories)) {
+        const id = resolveId(name, lookups.categories, 'category');
+        if (id) categoryIds.push(id);
+        else warnings.push(`${file.originalname}: category "${name}" not found on the site`);
+    }
+
+    const tags = splitList(settings.tags);
+    const altText = settings.altText ? String(settings.altText) : undefined;
+
+    try {
+        const data = await postAssetFile({
+            siteURL,
+            accessToken,
+            parentId: settings.parentId,
+            publish: settings.publish,
+            fileBuffer: file.buffer,
+            fileName: file.originalname,
+            mimeType: file.mimetype,
+            categoryIds,
+            permissionSetId,
+            altText,
+            tags,
+            duplicate: allowDuplicates
+        });
+
+        const needsAltText = altText && data?.altText !== altText;
+        const needsTags = tags.length && !(Array.isArray(data?.tags) && tags.every(t => data.tags.includes(t)));
+        if (data?.id && (needsAltText || needsTags)) {
+            try {
+                await annotateAsset({ siteURL, accessToken, assetId: data.id, altText, tags });
+            } catch (error) {
+                warnings.push(`${file.originalname}: uploaded, but alt text/tags could not be set (${error.message})`);
+            }
+        }
+        return { file: file.originalname, id: data?.id, duplicate: isDuplicateResponse(data), warnings };
+    } catch (error) {
+        logAsset('error', `Asset "${file.originalname}" failed: ${error.message}`);
+        return { file: file.originalname, error: error.message, warnings };
+    }
+}
+
+// Most files a single request may carry. The dashboard splits a big folder
+// into batches below this and sends them one after another, so a run of
+// thousands of files never has more than one batch buffered in memory.
+const ASSET_FILES_PER_REQUEST = 50;
+
+const uploadAssetFiles = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 100 * 1024 * 1024, files: ASSET_FILES_PER_REQUEST }
+}).array('files', ASSET_FILES_PER_REQUEST);
+
+// What the server knows about each batch the dashboard has sent, keyed by
+// the batchId the dashboard puts in the query string. The dashboard polls
+// this while a batch is in flight, so it can tell "the server is working on
+// it" apart from "the request never arrived" (and resend), and can pick up
+// the result of a batch whose response got lost on the way back.
+// state: receiving -> working -> finished. Entries expire after an hour.
+const assetBatchStatus = new Map();
+const ASSET_BATCH_STATUS_TTL_MS = 60 * 60 * 1000;
+
+function setAssetBatchStatus(batchId, update) {
+    if (!batchId) return;
+    const now = Date.now();
+    for (const [id, entry] of assetBatchStatus) {
+        if (now - entry.updatedAt > ASSET_BATCH_STATUS_TTL_MS) assetBatchStatus.delete(id);
+    }
+    assetBatchStatus.set(batchId, { ...assetBatchStatus.get(batchId), ...update, updatedAt: now });
+}
+
+app.get('/upload/assets/status/:batchId', (req, res) => {
+    const entry = assetBatchStatus.get(req.params.batchId);
+    if (!entry) return res.json({ state: 'unknown' });
+    const { state, done, total, result, statusCode } = entry;
+    res.json({ state, done, total, result, statusCode });
+});
+
+// One batch of the folder upload. The assets API takes one file per request,
+// so each file becomes its own POST, a few at a time.
+//
+// Body fields: url, apiKey, and the form-level defaults (parentId,
+// permissionSet, categories, altText, tags, publish). Optional `fileSettings`
+// is a JSON array lined up with the files — one object per file holding that
+// file's Assets-sheet row — whose non-blank values override the defaults.
+// Category / permission set values can be NAMES (resolved against the site,
+// same as the Excel sheets) or raw ids.
 app.post('/upload/assets', (req, res) => {
+    // In the query string (not the body) so it's known before the files
+    // have finished arriving.
+    const batchId = req.query.batchId ? String(req.query.batchId) : null;
+    setAssetBatchStatus(batchId, { state: 'receiving' });
+
+    // Every response from here on also lands in the batch status, so the
+    // dashboard can recover it if the response itself never arrives.
+    const reply = (statusCode, body) => {
+        setAssetBatchStatus(batchId, { state: 'finished', statusCode, result: body });
+        return res.status(statusCode).json(body);
+    };
+
     uploadAssetFiles(req, res, async (uploadErr) => {
         if (uploadErr) {
-            return res.status(400).json({ message: uploadErr.message });
+            const message = uploadErr.code === 'LIMIT_FILE_COUNT'
+                ? `Too many files in one request (max ${ASSET_FILES_PER_REQUEST}). The dashboard sends large folders in batches automatically.`
+                : uploadErr.message;
+            return reply(400, { message });
         }
 
-        const { url, apiKey, parentId, categories, permissionSet, publish } = req.body;
+        const { url, apiKey } = req.body;
 
         if (!req.files || !req.files.length) {
-            return res.status(400).json({ message: 'No files selected. Choose a folder and try again.' });
+            return reply(400, { message: 'No files selected. Choose a folder and try again.' });
         }
         if (!url || !apiKey) {
-            return res.status(400).json({ message: 'Website URL and token are required.' });
+            return reply(400, { message: 'Website URL and token are required.' });
         }
 
-        console.log(`Processing [assets] - URL: ${url} - ${req.files.length} file(s)`);
+        let perFile = [];
+        if (req.body.fileSettings) {
+            try {
+                perFile = JSON.parse(req.body.fileSettings);
+                if (!Array.isArray(perFile)) throw new Error('not an array');
+            } catch (_) {
+                return reply(400, { message: 'fileSettings must be a JSON array.' });
+            }
+        }
+
+        const defaults = {
+            parentId: req.body.parentId,
+            permissionSet: req.body.permissionSet,
+            categories: req.body.categories,
+            altText: req.body.altText,
+            tags: req.body.tags,
+            publish: req.body.publish === 'true' || req.body.publish === true
+        };
+        const allowDuplicates = req.body.allowDuplicates === 'true';
+        const batchLabel = req.body.batchLabel ? ` (${req.body.batchLabel})` : '';
+        const startedAt = Date.now();
+
+        setAssetBatchStatus(batchId, { state: 'working', done: 0, total: req.files.length });
+        logAsset('info', `Batch${batchLabel} started - site ${url} - ${req.files.length} file(s), first "${req.files[0].originalname}"`);
 
         try {
-            // Reuse the same reference-data lookups the content-type uploads use,
-            // so a category/permission-set name here means the same thing it does
-            // in the Excel sheets. Missing/unreachable lookups just leave names
-            // unresolved rather than failing the whole batch.
-            const [permissionSetLookup, categoriesLookup] = await Promise.all([
-                fetchReferenceData(url, 'permissionSet', apiKey).catch(() => new Map()),
-                fetchReferenceData(url, 'categories', apiKey).catch(() => new Map())
-            ]);
-
-            const permissionSetId = permissionSet
-                ? resolveId(permissionSet, permissionSetLookup, 'permissionSet')
-                : undefined;
-
-            const categoryIds = categories
-                ? String(categories).split(',').map(c => c.trim()).filter(Boolean)
-                    .map(name => resolveId(name, categoriesLookup, 'category'))
-                    .filter(Boolean)
-                : [];
+            const lookups = await getAssetLookups(url, apiKey);
 
             const successes = [];
             const failures = [];
-            const batchSize = 5;
+            const warnings = [];
+            const concurrency = 5;
 
-            for (let i = 0; i < req.files.length; i += batchSize) {
-                const batch = req.files.slice(i, i + batchSize);
-                console.log(`Uploading asset batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(req.files.length / batchSize)}`);
-
-                const results = await Promise.all(batch.map(async (file) => {
-                    try {
-                        const data = await postAssetFile({
-                            siteURL: url,
-                            accessToken: apiKey,
-                            parentId,
-                            publish: publish === 'true' || publish === true,
-                            fileBuffer: file.buffer,
-                            fileName: file.originalname,
-                            mimeType: file.mimetype,
-                            categoryIds,
-                            permissionSetId
-                        });
-                        return { file: file.originalname, data };
-                    } catch (error) {
-                        console.error(`Asset "${file.originalname}" failed:`, error.message);
-                        return { file: file.originalname, error: error.message };
+            for (let i = 0; i < req.files.length; i += concurrency) {
+                const slice = req.files.slice(i, i + concurrency);
+                const results = await Promise.all(slice.map((file, j) => {
+                    const row = perFile[i + j] || {};
+                    const settings = { ...defaults };
+                    for (const [key, value] of Object.entries(row)) {
+                        if (key === 'publish') {
+                            if (typeof value === 'boolean') settings.publish = value;
+                        } else if (value !== undefined && value !== null && String(value).trim() !== '') {
+                            settings[key] = value;
+                        }
                     }
+                    return uploadOneAsset({ file, settings, siteURL: url, accessToken: apiKey, lookups, allowDuplicates });
                 }));
 
                 for (const r of results) {
+                    warnings.push(...r.warnings);
                     if (r.error) failures.push(r);
                     else successes.push(r);
                 }
+                setAssetBatchStatus(batchId, { done: successes.length + failures.length });
             }
 
+            // A duplicate succeeded as a request but created nothing new, so it
+            // is reported separately rather than counted as uploaded.
+            const duplicates = successes.filter(s => s.duplicate);
+            const created = successes.length - duplicates.length;
+
+            const body = {
+                uploaded: created,
+                duplicates: duplicates.length,
+                duplicateFiles: duplicates.map(d => d.file),
+                failed: failures.length,
+                failedFiles: failures.map(f => f.file),
+                errors: failures.map(f => `${f.file}: ${f.error}`),
+                warnings
+            };
+
+            logAsset('info', `Batch${batchLabel} finished in ${Math.round((Date.now() - startedAt) / 1000)}s - ${created} uploaded, ${duplicates.length} already on the site, ${failures.length} failed`);
+
+            const dupNote = duplicates.length ? ` ${duplicates.length} already existed on the site.` : '';
             if (failures.length === 0) {
-                return res.json({ message: `Upload complete. Uploaded ${successes.length} file(s).` });
+                return reply(200, { ...body, message: `Upload complete. Uploaded ${created} file(s).${dupNote}` });
             }
-
-            return res.status(207).json({
-                message: `Uploaded ${successes.length} of ${successes.length + failures.length} file(s). ${failures.length} failed.`,
-                errors: failures.slice(0, 10).map(f => `${f.file}: ${f.error}`)
+            return reply(207, {
+                ...body,
+                message: `Uploaded ${created} of ${successes.length + failures.length} file(s). ${failures.length} failed.${dupNote}`
             });
         } catch (error) {
-            console.error(error);
-            res.status(500).json({ message: error.message || 'Upload failed. Check server logs.' });
+            logAsset('error', `Batch${batchLabel} crashed: ${error.stack || error.message}`);
+            reply(500, { message: error.message || 'Upload failed. Check server logs.' });
         }
     });
+});
+
+// Reads the Assets sheet out of a workbook so the dashboard can match its
+// rows to the files in the chosen folder before uploading.
+app.post('/inspect-assets-sheet', (req, res) => {
+    uploadSingle(req, res, (uploadErr) => {
+        if (uploadErr) return res.status(400).json({ message: uploadErr.message });
+        if (!req.file) return res.status(400).json({ message: 'No Excel file uploaded. Choose a file and try again.' });
+
+        try {
+            const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+            const parsed = parseAssetRows(workbook);
+            if (!parsed) {
+                return res.json({ found: false, rows: [] });
+            }
+            res.json({ found: true, sheetName: parsed.sheetName, rows: parsed.rows });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ message: error.message || 'Could not read the workbook.' });
+        }
+    });
+});
+
+// Download a pre-filled Assets sheet for the files in a folder — the quick
+// way to get one row per file without typing thousands of names.
+app.post('/assets/template', (req, res) => {
+    const { fileNames, defaults } = req.body || {};
+    if (!Array.isArray(fileNames) || !fileNames.length) {
+        return res.status(400).json({ message: 'Choose a folder first so there are file names to list.' });
+    }
+    const wb = buildAssetTemplateWorkbook(fileNames.map(String), defaults || {});
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="AssetsSheet.xlsx"');
+    res.send(buffer);
+});
+
+
+// --- Old-site link report ---
+//
+// Read-only. Scans every content item on the site for links that still
+// point at the old website (by domain), and lists the ones that point at a
+// FILE — those need repointing to the asset in Evolve, or a manual look.
+// Each file link is matched by file name against the site's asset library,
+// so the report says which ones have a likely replacement already uploaded
+// and which have nothing to point at yet. Nothing on the site is changed.
+
+// Extensions that make a link a file download rather than a page.
+const FILE_EXTENSIONS = new Set([
+    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'xlsm', 'csv', 'ppt', 'pptx', 'txt', 'rtf', 'odt', 'ods',
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'webp', 'heic',
+    'mp3', 'wav', 'mp4', 'mov', 'avi', 'wmv', 'm4v',
+    'zip', 'kmz', 'kml', 'dwg', 'shp', 'xml', 'json', 'eps', 'ai', 'psd'
+]);
+
+// Path segments CMSs commonly serve documents from even without an extension
+// (CivicPlus CivicEngage's /DocumentCenter/View/123, generic /documents/...).
+const FILE_PATH_HINTS = /\/(documentcenter\/view|documents|document|files|uploads|media|assets|archive\.aspx|imagerepository)\//i;
+
+const OLD_LINK_PAGE_SIZE = 200;
+
+// Every string inside a content item's data, with the field it came from.
+// Squidex data is { field: { iv|en: value } }, and values can be nested
+// (components, arrays, objects), so this walks all of it.
+function collectStrings(value, fieldPath, out) {
+    if (typeof value === 'string') {
+        out.push({ field: fieldPath, text: value });
+    } else if (Array.isArray(value)) {
+        value.forEach((v, i) => collectStrings(v, `${fieldPath}[${i}]`, out));
+    } else if (value && typeof value === 'object') {
+        for (const [k, v] of Object.entries(value)) {
+            // Partition keys (iv, en, …) aren't useful in the report.
+            const next = /^(iv|[a-z]{2}(-[a-z]{2})?)$/i.test(k) && fieldPath ? fieldPath : (fieldPath ? `${fieldPath}.${k}` : k);
+            collectStrings(v, next, out);
+        }
+    }
+    return out;
+}
+
+const decodeHtml = (s) => String(s)
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+
+const stripTags = (s) => decodeHtml(String(s).replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+
+// Domain list from the form: "co.monmouth.nj.us, www.monmouthcounty.gov"
+// -> ['co.monmouth.nj.us', 'monmouthcounty.gov'] (scheme, path and www. dropped).
+function parseOldDomains(input) {
+    return String(input ?? '')
+        .split(/[,\s]+/)
+        .map(d => d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, ''))
+        .filter(Boolean);
+}
+
+function hostMatches(host, domains) {
+    const h = host.toLowerCase().replace(/^www\./, '');
+    return domains.some(d => h === d || h.endsWith(`.${d}`));
+}
+
+// The file name a link points at: last path segment, URL-decoded.
+function fileNameFromUrl(u) {
+    const last = u.pathname.split('/').filter(Boolean).pop() || '';
+    try { return decodeURIComponent(last); } catch (_) { return last; }
+}
+
+function isFileLink(u) {
+    const name = fileNameFromUrl(u);
+    const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+    return FILE_EXTENSIONS.has(ext) || FILE_PATH_HINTS.test(u.pathname + '/');
+}
+
+// Every link to one of the old domains in a string: href/src attributes
+// (with their link text) plus bare URLs in plain-text fields. Relative
+// links can't be attributed to a domain, so they're left out.
+function findOldLinks(text, domains) {
+    const found = [];
+    const seen = new Set();
+    const add = (raw, linkText) => {
+        const href = decodeHtml(raw).trim();
+        let u;
+        try { u = new URL(href.startsWith('//') ? `https:${href}` : href); } catch (_) { return; }
+        if (!/^https?:$/.test(u.protocol) || !hostMatches(u.hostname, domains)) return;
+        if (seen.has(href)) return;
+        seen.add(href);
+        found.push({ url: href, linkText: linkText || '', isFile: isFileLink(u), fileName: fileNameFromUrl(u) });
+    };
+
+    const anchor = /<a\b[^>]*?\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
+    let m;
+    while ((m = anchor.exec(text))) add(m[2], stripTags(m[3]));
+
+    const attr = /\b(?:href|src)\s*=\s*(["'])(.*?)\1/gi;
+    while ((m = attr.exec(text))) add(m[2], '');
+
+    const bare = /(?:https?:)?\/\/[^\s"'<>()]+/gi;
+    while ((m = bare.exec(text))) add(m[0].replace(/[.,;:]+$/, ''), '');
+
+    return found;
+}
+
+// A readable title for an item, from whichever title-like field it has.
+function itemTitle(item) {
+    const data = item?.data || {};
+    const preferred = ['title', 'name', 'heading', 'question', 'newstitle', 'titleofevent', 'facilityname', 'department', 'link'];
+    const keys = Object.keys(data);
+    const ordered = [
+        ...preferred.flatMap(p => keys.filter(k => normalizeSlug(k) === p)),
+        ...keys.filter(k => /title|name/i.test(k))
+    ];
+    for (const key of ordered) {
+        const strings = collectStrings(data[key], key, []);
+        const text = strings.map(s => stripTags(s.text)).find(Boolean);
+        if (text) return text.slice(0, 200);
+    }
+    return '';
+}
+
+// Loose file-name key so "Form G (Sample).pdf" and "Form_G_Sample.pdf" meet.
+const looseFileKey = (name) => String(name).toLowerCase().replace(/\.[a-z0-9]+$/, '').replace(/[^a-z0-9]/g, '');
+
+// Pages through a list endpoint ({ total, items }) until everything is read.
+async function fetchAllPages(baseUrl, accessToken, label, extraHeaders = {}) {
+    const items = [];
+    for (let skip = 0; ; skip += OLD_LINK_PAGE_SIZE) {
+        const url = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}$top=${OLD_LINK_PAGE_SIZE}&$skip=${skip}`;
+        const response = await fetchWithRetry(url, () => ({
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${accessToken}`, ...extraHeaders }
+        }), label);
+        if (!response.ok) {
+            throw new Error(`${label}: HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+        }
+        const json = await response.json();
+        const page = json.items || (Array.isArray(json) ? json : []);
+        items.push(...page);
+        const total = typeof json.total === 'number' ? json.total : null;
+        if (!page.length || page.length < OLD_LINK_PAGE_SIZE || (total !== null && items.length >= total)) break;
+    }
+    return items;
+}
+
+// The site's assets as exact and loose file-name lookups.
+async function fetchAssetIndex(siteURL, accessToken) {
+    const assets = await fetchAllPages(`https://content.civicplus.com/api/apps/${siteURL}/assets`, accessToken, 'List assets');
+    const exact = new Map();
+    const loose = new Map();
+    for (const a of assets) {
+        const name = a.fileName || a.slug;
+        if (!name) continue;
+        const entry = { id: a.id, fileName: name, url: a?._links?.content?.href || '' };
+        const e = exact.get(name.toLowerCase()) || [];
+        e.push(entry);
+        exact.set(name.toLowerCase(), e);
+        const l = loose.get(looseFileKey(name)) || [];
+        l.push(entry);
+        loose.set(looseFileKey(name), l);
+    }
+    return { exact, loose, count: assets.length };
+}
+
+function matchAsset(fileName, assetIndex) {
+    const exact = assetIndex.exact.get(String(fileName).toLowerCase());
+    if (exact) return { how: 'exact', assets: exact };
+    const key = looseFileKey(fileName);
+    const loose = key ? assetIndex.loose.get(key) : null;
+    if (loose) return { how: 'similar', assets: loose };
+    return { how: 'none', assets: [] };
+}
+
+// Scans the whole site. Returns { fileLinks, pageLinks, summary }.
+async function buildOldLinkReport({ siteURL, accessToken, oldDomains, schemas }) {
+    const domains = parseOldDomains(oldDomains);
+    if (!domains.length) throw new Error('Enter the old website\'s domain (for example co.monmouth.nj.us).');
+
+    const schemaNames = schemas && schemas.length ? schemas : await fetchSchemaNames(siteURL, accessToken);
+    if (!schemaNames) throw new Error('Could not list the content types on this site. Check the site name and token with Test connection.');
+
+    const assetIndex = await fetchAssetIndex(siteURL, accessToken);
+
+    const fileLinks = [];
+    const pageLinks = [];
+    const schemaErrors = [];
+    let itemsScanned = 0;
+
+    for (const schema of schemaNames) {
+        let items;
+        try {
+            // X-Unpublished so drafts are scanned too, not just published items.
+            items = await fetchAllPages(
+                `https://content.civicplus.com/api/content/${siteURL}/${schema}`,
+                accessToken,
+                `List "${schema}" content`,
+                { 'X-Unpublished': '1' }
+            );
+        } catch (error) {
+            schemaErrors.push(`${schema}: ${error.message}`);
+            continue;
+        }
+
+        for (const item of items) {
+            itemsScanned++;
+            const base = {
+                contentType: schema,
+                title: itemTitle(item),
+                itemId: item.id,
+                status: item.status || '',
+                editLink: `https://content.civicplus.com/app/${siteURL}/content/${schema}/${item.id}`
+            };
+            for (const { field, text } of collectStrings(item.data || {}, '', [])) {
+                for (const link of findOldLinks(text, domains)) {
+                    const row = { ...base, field, oldUrl: link.url, linkText: link.linkText, fileName: link.fileName };
+                    if (!link.isFile) {
+                        pageLinks.push(row);
+                        continue;
+                    }
+                    const match = matchAsset(link.fileName, assetIndex);
+                    fileLinks.push({
+                        ...row,
+                        result: match.how === 'exact'
+                            ? 'Not changed - a file with this name IS in Evolve assets, repoint the link to it'
+                            : match.how === 'similar'
+                                ? 'Not changed - a file with a SIMILAR name is in Evolve assets, check it is the same file and repoint'
+                                : 'Not changed - NO matching file in Evolve assets, find/upload the file or remove the link',
+                        matchType: match.how,
+                        matchedAssets: match.assets.map(a => a.fileName).join(', '),
+                        matchedAssetIds: match.assets.map(a => a.id).join(', '),
+                        matchedAssetUrls: match.assets.map(a => a.url).filter(Boolean).join(', ')
+                    });
+                }
+            }
+        }
+    }
+
+    const summary = {
+        domains,
+        contentTypesScanned: schemaNames.length - schemaErrors.length,
+        itemsScanned,
+        assetsOnSite: assetIndex.count,
+        fileLinks: fileLinks.length,
+        fileLinksWithExactMatch: fileLinks.filter(l => l.matchType === 'exact').length,
+        fileLinksWithSimilarMatch: fileLinks.filter(l => l.matchType === 'similar').length,
+        fileLinksWithNoMatch: fileLinks.filter(l => l.matchType === 'none').length,
+        itemsWithFileLinks: new Set(fileLinks.map(l => `${l.contentType}/${l.itemId}`)).size,
+        pageLinks: pageLinks.length,
+        schemaErrors
+    };
+    return { fileLinks, pageLinks, summary };
+}
+
+// The report as a workbook: Summary, File links (sorted so the ones with
+// nothing to point at come first), and Other old-site links (pages).
+function buildOldLinkReportWorkbook({ fileLinks, pageLinks, summary }) {
+    const wb = XLSX.utils.book_new();
+
+    const summaryRows = [
+        ['Old-site link report', ''],
+        ['Old domain(s)', summary.domains.join(', ')],
+        ['Content types scanned', summary.contentTypesScanned],
+        ['Content items scanned', summary.itemsScanned],
+        ['Assets in Evolve', summary.assetsOnSite],
+        ['', ''],
+        ['Links to old-site FILES (not changed)', summary.fileLinks],
+        ['  ...no matching file in Evolve (needs the file found/uploaded)', summary.fileLinksWithNoMatch],
+        ['  ...a similar file name in Evolve (check, then repoint)', summary.fileLinksWithSimilarMatch],
+        ['  ...same file name in Evolve (repoint the link)', summary.fileLinksWithExactMatch],
+        ['Content items containing these links', summary.itemsWithFileLinks],
+        ['Links to old-site PAGES (separate sheet)', summary.pageLinks],
+        ...summary.schemaErrors.map(e => ['Could not scan', e])
+    ];
+    const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+    summarySheet['!cols'] = [{ wch: 62 }, { wch: 60 }];
+    XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
+
+    const order = { none: 0, similar: 1, exact: 2 };
+    const fileRows = [...fileLinks]
+        .sort((a, b) => order[a.matchType] - order[b.matchType] || a.contentType.localeCompare(b.contentType) || a.title.localeCompare(b.title))
+        .map(l => ({
+            'Result': l.result,
+            'Content type': l.contentType,
+            'Title': l.title,
+            'Status': l.status,
+            'Field': l.field,
+            'Link text': l.linkText,
+            'Old URL': l.oldUrl,
+            'File name': l.fileName,
+            'Matching Evolve asset(s)': l.matchedAssets,
+            'Asset ID(s)': l.matchedAssetIds,
+            'Asset URL(s)': l.matchedAssetUrls,
+            'Edit in Evolve': l.editLink,
+            'Item ID': l.itemId
+        }));
+    const fileSheet = XLSX.utils.json_to_sheet(fileRows, { header: ['Result', 'Content type', 'Title', 'Status', 'Field', 'Link text', 'Old URL', 'File name', 'Matching Evolve asset(s)', 'Asset ID(s)', 'Asset URL(s)', 'Edit in Evolve', 'Item ID'] });
+    fileSheet['!cols'] = [{ wch: 50 }, { wch: 18 }, { wch: 40 }, { wch: 10 }, { wch: 16 }, { wch: 30 }, { wch: 60 }, { wch: 40 }, { wch: 40 }, { wch: 38 }, { wch: 40 }, { wch: 60 }, { wch: 38 }];
+    XLSX.utils.book_append_sheet(wb, fileSheet, 'File links');
+
+    const pageRows = pageLinks.map(l => ({
+        'Content type': l.contentType,
+        'Title': l.title,
+        'Status': l.status,
+        'Field': l.field,
+        'Link text': l.linkText,
+        'Old URL': l.oldUrl,
+        'Edit in Evolve': l.editLink,
+        'Item ID': l.itemId
+    }));
+    const pageSheet = XLSX.utils.json_to_sheet(pageRows, { header: ['Content type', 'Title', 'Status', 'Field', 'Link text', 'Old URL', 'Edit in Evolve', 'Item ID'] });
+    pageSheet['!cols'] = [{ wch: 18 }, { wch: 40 }, { wch: 10 }, { wch: 16 }, { wch: 30 }, { wch: 60 }, { wch: 60 }, { wch: 38 }];
+    XLSX.utils.book_append_sheet(wb, pageSheet, 'Other old-site links');
+
+    return wb;
+}
+
+// Builds the report and sends it back as an .xlsx download, with the
+// summary in a header so the dashboard can show the counts too.
+app.post('/old-link-report', async (req, res) => {
+    const { url, apiKey, oldDomains } = req.body || {};
+    if (!url || !apiKey) {
+        return res.status(400).json({ message: 'Website URL and token are required.' });
+    }
+    if (!parseOldDomains(oldDomains).length) {
+        return res.status(400).json({ message: 'Enter the old website\'s domain (for example co.monmouth.nj.us).' });
+    }
+
+    const startedAt = Date.now();
+    logAsset('info', `Old-link report started - site ${url} - old domain(s) ${oldDomains}`);
+    try {
+        const report = await buildOldLinkReport({ siteURL: url, accessToken: apiKey, oldDomains });
+        const wb = buildOldLinkReportWorkbook(report);
+        const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+        logAsset('info', `Old-link report finished in ${Math.round((Date.now() - startedAt) / 1000)}s - ${report.summary.itemsScanned} items, ${report.summary.fileLinks} file links (${report.summary.fileLinksWithNoMatch} with no matching asset)`);
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="OldLinkReport-${url.replace(/[^a-z0-9.-]/gi, '_')}.xlsx"`);
+        res.setHeader('X-Report-Summary', encodeURIComponent(JSON.stringify(report.summary)));
+        res.send(buffer);
+    } catch (error) {
+        logAsset('error', `Old-link report failed: ${error.message}`);
+        res.status(500).json({ message: error.message || 'Could not build the report.' });
+    }
 });
 
 
@@ -1359,6 +2071,10 @@ app.post('/inspect-workbook', (req, res) => {
                 if (matched) matchedByType[type] = matched;
             }
             const claimedSheets = new Set(Object.values(matchedByType));
+            // The Assets sheet drives the Documents upload, not a content
+            // type — keep it out of the "unrecognized sheets" list.
+            const assetSheet = findAssetSheetName(workbook.SheetNames);
+            if (assetSheet) claimedSheets.add(assetSheet);
 
             const sheets = workbook.SheetNames.map(name => {
                 const rows = XLSX.utils.sheet_to_json(workbook.Sheets[name]);
@@ -1642,7 +2358,12 @@ async function processUpload(type, siteURL, accessToken, workbook, batchSize = 1
 }
 
 if (require.main === module) {
-    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    // Node cuts off any request still running after 5 minutes by default.
+    // A batch of large files against a slow site can legitimately take
+    // longer, and being cut off would make the dashboard count files the
+    // server is still uploading as failed.
+    server.requestTimeout = 30 * 60 * 1000;
 }
 
 module.exports = {
@@ -1651,6 +2372,21 @@ module.exports = {
     processUpload,
     fetchReferenceData,
     postAssetFile,
+    annotateAsset,
+    fetchWithRetry,
+    ASSET_RETRY,
+    ASSET_FILES_PER_REQUEST,
+    assetBatchStatus,
+    parseOldDomains,
+    findOldLinks,
+    collectStrings,
+    itemTitle,
+    buildOldLinkReport,
+    buildOldLinkReportWorkbook,
+    parsePublishFlag,
+    parseAssetRows,
+    buildAssetTemplateWorkbook,
+    assetLookupCache,
 
     // Exported for direct unit testing below. Purely additive — nothing
     // above relies on these being exported, so this changes no behavior.

@@ -92,12 +92,17 @@
                 <section id="assetsSection">
                     <div class="section-head">
                         <h2>Documents</h2>
-                        <p class="section-hint">Uploads every file in a folder to the assets library.</p>
+                        <p class="section-hint">Uploads every file in a folder to the assets library, in batches.</p>
                     </div>
 
                     <label for="inputFolder">Folder of files</label>
                     <input type="file" id="inputFolder" webkitdirectory multiple>
                     <span id="folderFileCount" class="hint"></span>
+
+                    <div id="assetSheetStatus" class="asset-sheet-status" hidden></div>
+                    <label id="onlyListedLabel" class="check-label" for="inputOnlyListed" hidden><input type="checkbox" id="inputOnlyListed"> Only upload files listed in the Assets sheet</label>
+
+                    <p class="panel-hint">The fields below are defaults. A row in the workbook's <strong>Assets</strong> sheet overrides them for that file (blank cells keep the default).</p>
 
                     <div class="field-row">
                         <div class="field">
@@ -113,9 +118,56 @@
                     <label for="inputCategories">Categories</label>
                     <input type="text" id="inputCategories" placeholder="Comma-separated names, optional">
 
-                    <label id="publishLabel" for="inputPublish"><input type="checkbox" id="inputPublish"> Publish immediately</label>
+                    <div class="field-row">
+                        <div class="field">
+                            <label for="inputAltText">Alt text</label>
+                            <input type="text" id="inputAltText" placeholder="Optional, used when a row has none">
+                        </div>
+                        <div class="field">
+                            <label for="inputTags">Tags</label>
+                            <input type="text" id="inputTags" placeholder="Comma-separated, optional">
+                        </div>
+                    </div>
 
-                    <button id="uploadAssetsBtn" class="assets-btn">Upload documents</button>
+                    <div class="field-row">
+                        <div class="field field-narrow">
+                            <label for="inputBatchSize">Files per batch</label>
+                            <input type="text" id="inputBatchSize" value="25" inputmode="numeric">
+                        </div>
+                    </div>
+
+                    <label id="publishLabel" for="inputPublish"><input type="checkbox" id="inputPublish"> Publish immediately</label>
+                    <label class="check-label" for="inputAllowDuplicates"><input type="checkbox" id="inputAllowDuplicates"> Upload duplicates as new copies</label>
+                    <span class="hint">Otherwise a file the site already has is not uploaded again.</span>
+
+                    <div class="assets-actions">
+                        <button id="uploadAssetsBtn" class="assets-btn">Upload documents</button>
+                        <button type="button" id="stopAssetsBtn" class="cancel-btn" hidden>Stop</button>
+                        <button type="button" id="retryAssetsBtn" class="cancel-btn" hidden>Retry failed</button>
+                        <button type="button" id="assetTemplateBtn" class="cancel-btn">Download Assets sheet for this folder</button>
+                    </div>
+
+                    <div id="assetProgress" class="asset-progress" hidden>
+                        <div class="asset-progress-track"><div id="assetProgressBar" class="asset-progress-bar"></div></div>
+                        <span id="assetProgressText" class="hint"></span>
+                    </div>
+                    <ul id="assetIssues" class="asset-issues" hidden></ul>
+                </section>
+
+                <section id="linkReportSection">
+                    <div class="section-head">
+                        <h2>Old-site link report</h2>
+                        <p class="section-hint">Read-only. Lists links to old-site files still in the site's content.</p>
+                    </div>
+
+                    <label for="inputOldDomains">Old website domain(s)</label>
+                    <input type="text" id="inputOldDomains" placeholder="e.g. co.monmouth.nj.us (comma-separate several)">
+                    <span class="hint">Scans every content item on the site (drafts too) and matches each file link by name against the Evolve assets library. Nothing on the site is changed.</span>
+
+                    <div class="assets-actions">
+                        <button type="button" id="linkReportBtn" class="assets-btn">Build report</button>
+                    </div>
+                    <div id="linkReportSummary" class="asset-sheet-status" hidden></div>
                 </section>
 
                 <section id="logSection">
